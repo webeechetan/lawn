@@ -7,7 +7,6 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use App\Notifications\User\OtpNotification;
-use App\Helpers\ApiResponse;
 
 class AuthService
 {
@@ -24,8 +23,10 @@ class AuthService
 
             return [
                 'success' => true,
-                'user' => $user,
-                'token' => $token,
+                'data' => [
+                    'user' => $user,
+                    'token' => $token,
+                ]
             ];
         } catch (\Exception $e) {
             Log::error('User registration failed: ' . $e->getMessage());
@@ -36,46 +37,58 @@ class AuthService
         }
     }
 
-
     // Login user
     public function login($data)
     {
-        $user = User::where('email', $data->email)->first();
+        $res = Auth::attempt(['email' => $data->email, 'password' => $data->password]);
 
-        if (!$user || !Hash::check($data->password, $user->password)) {
+        if (!$res) {
             return [
                 'success' => false,
                 'message' => 'Invalid credentials'
             ];
         }
 
-        return $this->sendOtp($user);
+        $user = Auth::user();
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return [
+            'success' => true,
+            'data' => [
+                'user' => [
+                    'id' => $user->id,
+                    'email' => $user->email,
+                    'created_at' => $user->created_at,
+                ],
+                'token' => $token,
+            ]
+        ];
 
     }
 
-    // Send OTP
-    public function sendOtp($user)
+    public function sendPasswordResetOTP($data)
     {
-        $otp = mt_rand(1000, 9999);
+        
+        $user = User::where('email', $data->email)->first();
 
-        try {
-            $user->notify(new OtpNotification($user, $otp));
-            $user->otp = $otp;
-            $user->otp_expire_at = now()->addMinutes(5);
-            $user->save();
-
-            return [
-                'success' => true,
-                'message' => 'OTP sent successfully'
-            ];
-
-        } catch (\Exception $e) {
-            Log::error('Failed to send OTP: ' . $e->getMessage());
+        if (!$user) {
             return [
                 'success' => false,
-                'message' => 'Failed to send OTP'
+                'message' => 'User not found'
             ];
         }
+
+        $otp = mt_rand(1000, 9999);
+        $user->otp = $otp;
+        $user->otp_expire_at = now()->addMinutes(5);
+        $user->save();
+
+        $user->notify(new OtpNotification($user, $otp));
+
+        return [
+            'success' => true,
+        ];
+        
     }
 
     // Verify OTP
@@ -97,17 +110,44 @@ class AuthService
             ];
         }
 
-        // Clear OTP after successful verification
+        return [
+            'success' => true,
+            'data' => [
+                'message' => 'OTP verified successfully',
+            ]
+        ];
+    }
+
+    // Reset password
+    public function resetPassword($data){
+        $user = User::where('email', $data->email)->first();
+
+        if (!$user) {
+            return [
+                'success' => false,
+                'message' => 'User not found'
+            ];
+        }
+
+        if($user->otp != $data->otp || $user->otp_expire_at < now()){
+            return [
+                'success' => false,
+                'message' => 'Invalid OTP'
+            ];
+        }
+
+        $user->password = Hash::make($data->password);
         $user->otp = null;
         $user->otp_expire_at = null;
         $user->save();
 
-        $token = $user->createToken('auth_token')->plainTextToken;
-
         return [
             'success' => true,
-            'user' => $user,
-            'token' => $token,
+            'data' => [
+                'message' => 'Password reset successfully',
+            ]
         ];
+
+
     }
 }
